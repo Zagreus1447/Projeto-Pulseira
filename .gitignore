@@ -1,0 +1,17 @@
+# Arquivos e pastas do PlatformIO e VSCode
+.pio
+.vscode
+
+# Arquivos de sistema operacional
+.DS_Store
+Thumbs.db
+
+# Ignora o conteúdo da pasta de bibliotecas.
+lib/
+
+# Mas NÃO ignore o arquivo readme dentro de lib
+!lib/readme.txt
+
+# Arquivos de build (se houver)
+/firmware*.bin
+/firmware*.elf
