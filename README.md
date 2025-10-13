@@ -25,4 +25,6 @@ Este projeto implementa um sistema de detecção de quedas utilizando um microco
 
 ## Status do Projeto
 
-- Funcional. Próximos passos podem incluir o envio de alertas via Wi-Fi.
+- Funcional. Próximos passos devem incluir o envio de alertas via Wi-Fi.
+             Incluir o Max30103.
+             Incluir backend incluir o design pcb e 3d do projeto
