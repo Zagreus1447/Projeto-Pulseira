@@ -1,37 +1,48 @@
 #ifndef FALLDETECTOR_H
 #define FALLDETECTOR_H
 
+#include <Arduino.h>
 #include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <Wire.h>
-#include <cmath>
 
+// --- Parâmetros de Detecção (Mova-os para cá) ---
+#define FREEFALL_THRESHOLD_LOW 0.35    // (em 'g')
+#define IMPACT_THRESHOLD_HIGH 3.5   // (em 'g')
+#define IMPACT_TIME_WINDOW 1000   // (ms)
+#define IMMOBILITY_THRESHOLD 0.2    // (em 'g')
+#define IMMOBILITY_TIME 5000    // (ms)
+
+// Enumeração dos estados de queda (definida aqui)
+enum FallState {
+  STATE_NORMAL,
+  STATE_FREEFALL_DETECTED,
+  STATE_IMPACT_DETECTED,
+  STATE_FALL_CONFIRMED
+};
+
+
+// Definição da "Classe" (o nosso objeto detector)
 class FallDetector {
 public:
-    FallDetector();
-    void setup();
-    void update();
+  // Construtor: Recebe uma "referência" ao sensor MPU
+  FallDetector(Adafruit_MPU6050 &mpu_sensor);
+
+  // Função principal, para ser chamada em loop()
+  void update();
+
+  // Função para checar se uma queda foi confirmada
+  bool isFallConfirmed();
+
+  // Função para resetar o estado (ex: após o alerta ser enviado)
+  void reset();
 
 private:
-    // Variáveis e objetos privados 
-    Adafruit_MPU6050 *mpu;
-
-    // Parâmetros de Detecção
-    const float FALL_THRESHOLD_LOW = 3.5;
-    const float FALL_THRESHOLD_HIGH = 30.0;
-    const int FALL_TIME_WINDOW = 500;
-
-    // Parâmetros do Filtro
-    const float ALPHA = 0.8;
-    float filtered_accel = 0.0;
-    bool first_reading = true;
-
-    // Variáveis de Estado
-    bool freefall_detected = false;
-    unsigned long freefall_start_time = 0;
-
-    // Funções auxiliares privadas (se necessário)
-    void checkForFall();
+  // Variáveis internas que a classe usa
+  Adafruit_MPU6050 &mpu; // Referência ao nosso sensor
+  FallState currentState;
+  
+  unsigned long freefallTimestamp;
+  unsigned long impactTimestamp;
+  float lastAccelX, lastAccelY, lastAccelZ;
 };
 
 #endif // FALLDETECTOR_H

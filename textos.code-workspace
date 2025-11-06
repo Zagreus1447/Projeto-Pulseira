@@ -1,0 +1,20 @@
+{
+	"folders": [
+		{
+			"path": "../../../2025.1/Empreende ufc/textos"
+		},
+		{
+			"name": "PulseiraExpoVersion",
+			"path": "../PulseiraExpoVersion"
+		},
+		{
+			"name": "Esp32 Dev kit 1",
+			"path": "../Esp32 Dev kit 1"
+		},
+		{
+			"name": "Projeto pulseira",
+			"path": "."
+		}
+	],
+	"settings": {}
+}
