@@ -1,11 +1,8 @@
 #include "PulseSensor.h"
 #include <Arduino.h>
 
-// --- Configurações (v24 - Lógica "Divide por 2") ---
-#define PULSE_INPUT_PIN 4     // <<< USANDO O PINO 4 (baseado no seu logger)
-
-// --- Filtros Fisiológicos ---
-// A "Base 60 BPM" que você pediu
+#define PULSE_INPUT_PIN 4     
+//  Filtros Fisiológicos 
 #define REAL_BPM_MIN 45     // IBI 1333ms
 #define REAL_BPM_MAX 90     // IBI 667ms
 #define DOUBLE_BPM_MAX 180  // IBI 333ms (O "eco" de 114-146 está aqui)
@@ -13,10 +10,10 @@
 // O Limiar Estático (CALIBRADO COM SEUS DADOS)
 #define STATIC_THRESHOLD 2380  // (Ruído ~2360, Pico ~2430)
 
-// --- Variáveis do Timer de Hardware ---
+//  Variáveis do Timer de Hardware 
 hw_timer_t *timer = NULL; 
 
-// --- Variáveis de Detecção de Batimento ---
+//  Variáveis de Detecção de Batimento 
 volatile int Signal;
 volatile int IBI = 600;
 volatile bool Pulse = false;
@@ -42,12 +39,12 @@ void IRAM_ATTR onTimer() {
   
   unsigned long timeSinceLastBeat = sampleCounter - lastBeatTime;
 
-  // --- 1. Lógica de Detecção de Batimento (Simples) ---
+  // Lógica de Detecção de Batimento (Simples) 
   
   // Se o sinal subiu acima do nosso limiar (2380) E não estávamos em um pulso
   if (Signal > STATIC_THRESHOLD && Pulse == false) {
     
-    // --- 2. Filtro de "Janela de Tempo" ---
+    // Filtro de "Janela de Tempo" 
     // O "período cego" é o mais rápido que um humano pode ir (180 BPM)
     if (timeSinceLastBeat > 333) { // (IBI para 180 BPM)
       
@@ -58,7 +55,7 @@ void IRAM_ATTR onTimer() {
       int instantaneousBPM = 60000 / IBI;
       int finalBPM = 0;
 
-      // --- A "LÓGICA 114 = 57" (Sua Ideia) ---
+      //  A "LÓGICA 114 = 57" 
       
       // Caso 1: O batimento é muito rápido (90-180 BPM)?
       if (instantaneousBPM > REAL_BPM_MAX && instantaneousBPM < DOUBLE_BPM_MAX) {
@@ -73,7 +70,7 @@ void IRAM_ATTR onTimer() {
       // Caso 3: É ruído (<45 ou >180).
       // 'finalBPM' continua 0 e será ignorado.
 
-      // --- Média Móvel ---
+      // Média Móvel 
       // Só adiciona ao histórico se for um batimento válido
       if (finalBPM > 0) {
         bpmHistory[bpmHistoryIndex] = finalBPM;
@@ -93,12 +90,12 @@ void IRAM_ATTR onTimer() {
     }
   }
 
-  // --- 3. Lógica de Fim de Batimento ---
+  // Lógica de Fim de Batimento 
   if (Signal < STATIC_THRESHOLD && Pulse == true) {
     Pulse = false; // O pulso acabou, estamos prontos para o próximo
   }
 
-  // --- 4. Lógica de Timeout (Sem Dedo) ---
+  //  Lógica de Timeout (Sem Dedo)
   if (timeSinceLastBeat > 2000) { // Se 2s se passaram
     
     // Zera o histórico
@@ -109,7 +106,6 @@ void IRAM_ATTR onTimer() {
       BPM = 0;
       newBeatAvailable = true;
     }
-    // Não resetamos o lastBeatTime aqui, deixamos o timeout continuar
   }
 }
 
@@ -130,7 +126,7 @@ void setupPulseSensor() {
   // Configuração do Timer de Hardware (Timer 0)
   timer = timerBegin(0, 80, true);
   timerAttachInterrupt(timer, &onTimer, true);
-  timerAlarmWrite(timer, 5000, true); // Amostragem a 200Hz (a cada 5ms = 5000us)
+  timerAlarmWrite(timer, 5000, true); 
   timerAlarmEnable(timer);
   
   Serial.println("PulseSensor rodando em segundo plano.");

@@ -1,23 +1,20 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
-#include "FallDetector.h" // <<< Nosso detector de queda
-#include "PulseSensor.h"  // <<< Nosso detector de pulso
+#include "FallDetector.h"
+#include "PulseSensor.h" 
 
-// --- BIBLIOTECAS PARA O ESP-NOW ---
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <WiFi.h>
 
-// --- CONFIGURAÇÕES DO ESP-NOW ---
 constexpr char WIFI_SSID[] = "a10";
 uint8_t broadcastAddress[] = {0xF4, 0x65, 0x0B, 0x46, 0x41, 0x30};
 
-// --- ESTRUTURA DOS DADOS ---
 typedef struct struct_message {
   int id;
-  float temp;           // Usaremos 'temp' para o BPM
-  int hum;              // Usaremos 'hum' para a Queda (0 ou 1)
+  float temp;           
+  int hum;              
   unsigned int readingId; 
 } struct_message;
 
@@ -26,19 +23,19 @@ struct_message myData;
 esp_now_peer_info_t peerInfo;
 unsigned int readingId = 0;
 
-// --- OBJETOS GLOBAIS DO PROJETO ---
+//  OBJETOS GLOBAIS DO PROJETO
 #define I2C_SDA_PIN 8
 #define I2C_SCL_PIN 9
 Adafruit_MPU6050 mpu;
 FallDetector detector(mpu);
 
-// --- Variáveis de Estado ---
+// Variáveis de Estado 
 int lastKnownBPM = 0;
 int lastFallStatus = 0; 
 unsigned long lastSendTime = 0;
-const long sendInterval = 2000; // Envia dados a cada 2 segundos
+const long sendInterval = 2000; 
 
-// --- FUNÇÕES DE CALLBACK ---
+// FUNÇÕES DE CALLBACK 
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   // Reduz o spam. Só imprime se falhar.
   if (status != ESP_NOW_SEND_SUCCESS) {
@@ -57,13 +54,12 @@ int32_t getWiFiChannel(const char *ssid) {
   return 0;
 }
 
-// --- SETUP ---
+//SETUP 
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  Serial.println("--- Inicializando Pulseira (v25 - 0 e 1) ---");
+  Serial.println(" Inicializando Pulseira (v25 - 0 e 1) -");
 
-  // --- 1. Inicializa o MPU6050 (Detector de Queda) ---
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Serial.println("Conectando ao MPU6050...");
   while (!mpu.begin()) {
@@ -75,11 +71,11 @@ void setup() {
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   Serial.println("Detector de queda pronto.");
 
-  // --- 2. Inicializa o PulseSensor ---
+  // Inicializa o PulseSensor
   setupPulseSensor(); // (Isso chama o nosso código v24 "Divide por 2")
   Serial.println("PulseSensor pronto.");
 
-  // --- 3. Inicializa o ESP-NOW ---
+  //  Inicializa o ESP-NOW 
   Serial.println("Configurando ESP-NOW...");
   WiFi.mode(WIFI_STA);
   int32_t channel = getWiFiChannel(WIFI_SSID);
@@ -111,7 +107,6 @@ void setup() {
   Serial.println("--- Sistema Totalmente Operacional ---");
 }
 
-// --- LOOP PRINCIPAL ---
 void loop() {
   
   detector.update();
@@ -130,8 +125,8 @@ void loop() {
     
     // Preenche a estrutura
     myData.id = 1; 
-    myData.temp = (float)lastKnownBPM; // BPM vai no campo 'temp'
-    myData.hum = lastFallStatus;      // Queda (0 ou 1) vai no campo 'hum'
+    myData.temp = (float)lastKnownBPM; 
+    myData.hum = lastFallStatus;     
     myData.readingId = readingId++;
     
     esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
@@ -144,7 +139,6 @@ void loop() {
       Serial.print(", Queda: ");
       Serial.println(myData.hum);
       
-      // <<< CORREÇÃO: Reseta a queda SE FOR 1 (Confirmada)
       if (lastFallStatus == 1) {
         Serial.println("Alerta de Queda (1) enviado! Resetando detector...");
         detector.reset();

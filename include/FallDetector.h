@@ -27,7 +27,7 @@ public:
    * 0 = Normal
    * 1 = Queda Confirmada
    */
-  int getFallStatus(); // <<< Esta é a função correta
+  int getFallStatus(); 
   
   void reset();
 private:
