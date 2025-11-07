@@ -1,51 +1,115 @@
 #include "PulseSensor.h"
+#include <Arduino.h>
 
-// --- Configurações do PulseSensor Manual ---
-#define PULSE_INPUT_PIN 4     // Pino ADC (GPIO 4) onde o sinal (S) está conectado
-#define ADC_THRESHOLD 2300    // Limiar. AJUSTE ESTE VALOR (0-4095)!
+// --- Configurações (v24 - Lógica "Divide por 2") ---
+#define PULSE_INPUT_PIN 4     // <<< USANDO O PINO 4 (baseado no seu logger)
+
+// --- Filtros Fisiológicos ---
+// A "Base 60 BPM" que você pediu
+#define REAL_BPM_MIN 45     // IBI 1333ms
+#define REAL_BPM_MAX 90     // IBI 667ms
+#define DOUBLE_BPM_MAX 180  // IBI 333ms (O "eco" de 114-146 está aqui)
+
+// O Limiar Estático (CALIBRADO COM SEUS DADOS)
+#define STATIC_THRESHOLD 2380  // (Ruído ~2360, Pico ~2430)
 
 // --- Variáveis do Timer de Hardware ---
-hw_timer_t *timer = NULL; // Ponteiro para o timer
+hw_timer_t *timer = NULL; 
 
 // --- Variáveis de Detecção de Batimento ---
-// 'volatile' é crucial para variáveis usadas dentro de um ISR (timer)
-volatile int latestBPM = 0;
+volatile int Signal;
+volatile int IBI = 600;
+volatile bool Pulse = false;
 volatile bool newBeatAvailable = false;
-volatile int latestSignal = 0;
+volatile int BPM = 0;
+volatile unsigned long lastBeatTime = 0; // Tempo do último batimento VÁLIDO
+volatile unsigned long sampleCounter = 0; // Tempo total (em ms)
 
-volatile unsigned long lastBeatTime = 0; // Tempo do último batimento
-volatile bool pulseDetected = false;     // Flag para evitar múltiplos picos
+// --- Variáveis da Média Móvel (20 medidas) ---
+#define BPM_HISTORY_SIZE 20 // <<< SEU PEDIDO DE 20 MEDIDAS
+volatile int bpmHistory[BPM_HISTORY_SIZE];
+volatile int bpmHistoryIndex = 0;
+volatile int validHistoryEntries = 0;
+
 
 /**
  * @brief Esta é a Rotina de Serviço de Interrupção (ISR)
- * Ela é chamada automaticamente pelo timer do ESP32 a cada 2ms (500Hz).
- * NÃO coloque 'Serial.print' ou 'delay' aqui dentro!
+ * Ela é chamada automaticamente pelo timer do ESP32 a cada 5ms (200Hz).
  */
 void IRAM_ATTR onTimer() {
-  // 1. Lê o valor analógico (0-4095 no ESP32-C3)
-  latestSignal = analogRead(PULSE_INPUT_PIN);
+  Signal = analogRead(PULSE_INPUT_PIN);
+  sampleCounter += 5; // Amostragem de 5ms (200Hz)
+  
+  unsigned long timeSinceLastBeat = sampleCounter - lastBeatTime;
 
-  unsigned long currentTime = millis();
-
-  // 2. Lógica de Detecção de Pico (Batimento)
-  // Se o sinal passou o limiar E não estávamos já em um pulso
-  if (latestSignal > ADC_THRESHOLD && !pulseDetected) {
+  // --- 1. Lógica de Detecção de Batimento (Simples) ---
+  
+  // Se o sinal subiu acima do nosso limiar (2380) E não estávamos em um pulso
+  if (Signal > STATIC_THRESHOLD && Pulse == false) {
     
-    // Calcula o IBI (Intervalo Entre Batimentos)
-    unsigned long ibi = currentTime - lastBeatTime;
+    // --- 2. Filtro de "Janela de Tempo" ---
+    // O "período cego" é o mais rápido que um humano pode ir (180 BPM)
+    if (timeSinceLastBeat > 333) { // (IBI para 180 BPM)
+      
+      Pulse = true;
+      IBI = timeSinceLastBeat;
+      lastBeatTime = sampleCounter;
+      
+      int instantaneousBPM = 60000 / IBI;
+      int finalBPM = 0;
 
-    // Filtra ruído (IBI > 250ms = 240 BPM max)
-    if (ibi > 250) { 
-      latestBPM = 60000 / ibi; // Converte IBI (ms) para BPM
-      lastBeatTime = currentTime;
-      newBeatAvailable = true; // Avisa o loop() principal
+      // --- A "LÓGICA 114 = 57" (Sua Ideia) ---
+      
+      // Caso 1: O batimento é muito rápido (90-180 BPM)?
+      if (instantaneousBPM > REAL_BPM_MAX && instantaneousBPM < DOUBLE_BPM_MAX) {
+        // É uma "Contagem Dupla" (ex: 114). Divida por 2.
+        finalBPM = instantaneousBPM / 2;
+      }
+      // Caso 2: O batimento está na faixa real (45-90 BPM)?
+      else if (instantaneousBPM >= REAL_BPM_MIN && instantaneousBPM <= REAL_BPM_MAX) {
+        // É um batimento real (ex: 75). Use-o.
+        finalBPM = instantaneousBPM;
+      }
+      // Caso 3: É ruído (<45 ou >180).
+      // 'finalBPM' continua 0 e será ignorado.
+
+      // --- Média Móvel ---
+      // Só adiciona ao histórico se for um batimento válido
+      if (finalBPM > 0) {
+        bpmHistory[bpmHistoryIndex] = finalBPM;
+        bpmHistoryIndex = (bpmHistoryIndex + 1) % BPM_HISTORY_SIZE;
+        
+        if (validHistoryEntries < BPM_HISTORY_SIZE) {
+            validHistoryEntries++;
+        }
+        
+        int totalBPM = 0;
+        for (int i = 0; i < validHistoryEntries; i++) {
+          totalBPM += bpmHistory[i];
+        }
+        BPM = totalBPM / validHistoryEntries;
+        newBeatAvailable = true;
+      }
     }
-    
-    pulseDetected = true; // Marca que estamos "dentro" de um pulso
   }
-  // Se o sinal caiu abaixo do limiar
-  else if (latestSignal < ADC_THRESHOLD) {
-    pulseDetected = false; // Reseta a flag, pronto para o próximo pulso
+
+  // --- 3. Lógica de Fim de Batimento ---
+  if (Signal < STATIC_THRESHOLD && Pulse == true) {
+    Pulse = false; // O pulso acabou, estamos prontos para o próximo
+  }
+
+  // --- 4. Lógica de Timeout (Sem Dedo) ---
+  if (timeSinceLastBeat > 2000) { // Se 2s se passaram
+    
+    // Zera o histórico
+    for (int i = 0; i < BPM_HISTORY_SIZE; i++) { bpmHistory[i] = 0; }
+    bpmHistoryIndex = 0; validHistoryEntries = 0;
+    
+    if (BPM != 0) {
+      BPM = 0;
+      newBeatAvailable = true;
+    }
+    // Não resetamos o lastBeatTime aqui, deixamos o timeout continuar
   }
 }
 
@@ -53,26 +117,23 @@ void IRAM_ATTR onTimer() {
  * @brief Implementação da função setupPulseSensor()
  */
 void setupPulseSensor() {
-  Serial.println("Configurando o PulseSensor (Modo Manual)...");
+  Serial.println("Configurando o PulseSensor (v24 - Lógica 'Divide por 2')...");
   pinMode(PULSE_INPUT_PIN, INPUT);
+  
+  // Inicializa o histórico
+  for (int i = 0; i < BPM_HISTORY_SIZE; i++) {
+      bpmHistory[i] = 0;
+  }
+  bpmHistoryIndex = 0;
+  validHistoryEntries = 0;
 
-  // --- Configuração do Timer de Hardware (Timer 0) ---
-  // API correta para ESP32 (e C3)
-  
-  // Timer 0, prescaler 80 (para 1MHz), contagem crescente
+  // Configuração do Timer de Hardware (Timer 0)
   timer = timerBegin(0, 80, true);
-  
-  // Anexa nossa função 'onTimer' ao timer
   timerAttachInterrupt(timer, &onTimer, true);
-  
-  // Define o timer para disparar a cada 2000 micro-segundos (2ms)
-  // (1MHz / 2000 = 500Hz)
-  timerAlarmWrite(timer, 2000, true); // true = auto-reload
-  
-  // Inicia o timer
+  timerAlarmWrite(timer, 5000, true); // Amostragem a 200Hz (a cada 5ms = 5000us)
   timerAlarmEnable(timer);
   
-  Serial.println("PulseSensor rodando em segundo plano (Timer 0).");
+  Serial.println("PulseSensor rodando em segundo plano.");
 }
 
 /**
@@ -80,7 +141,7 @@ void setupPulseSensor() {
  */
 bool isHeartbeatAvailable() {
   if (newBeatAvailable) {
-    newBeatAvailable = false; // Reseta a flag
+    newBeatAvailable = false;
     return true;
   }
   return false;
@@ -90,5 +151,5 @@ bool isHeartbeatAvailable() {
  * @brief Implementação da função getLatestBPM()
  */
 int getLatestBPM() {
-  return latestBPM;
+  return BPM;
 }

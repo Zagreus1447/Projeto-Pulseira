@@ -2,31 +2,72 @@
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include "FallDetector.h" // <<< Nosso detector de queda
-#include "PulseSensor.h"  // <<< Nosso detector de pulso (manual)
+#include "PulseSensor.h"  // <<< Nosso detector de pulso
 
-// --- Pinos I2C ---
+// --- BIBLIOTECAS PARA O ESP-NOW ---
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <WiFi.h>
+
+// --- CONFIGURAÇÕES DO ESP-NOW ---
+constexpr char WIFI_SSID[] = "a10";
+uint8_t broadcastAddress[] = {0xF4, 0x65, 0x0B, 0x46, 0x41, 0x30};
+
+// --- ESTRUTURA DOS DADOS ---
+typedef struct struct_message {
+  int id;
+  float temp;           // Usaremos 'temp' para o BPM
+  int hum;              // Usaremos 'hum' para a Queda (0 ou 1)
+  unsigned int readingId; 
+} struct_message;
+
+// Cria os objetos
+struct_message myData;
+esp_now_peer_info_t peerInfo;
+unsigned int readingId = 0;
+
+// --- OBJETOS GLOBAIS DO PROJETO ---
 #define I2C_SDA_PIN 8
 #define I2C_SCL_PIN 9
-
-// --- OBJETOS GLOBAIS ---
 Adafruit_MPU6050 mpu;
 FallDetector detector(mpu);
 
 // --- Variáveis de Estado ---
-bool alertHasBeenSent = false;
-int lastKnownBPM = 0; // <<< Variável para armazenar o último BPM
-unsigned long lastBpmPrintTime = 0; // <<< Timer para impressão do BPM
+int lastKnownBPM = 0;
+int lastFallStatus = 0; 
+unsigned long lastSendTime = 0;
+const long sendInterval = 2000; // Envia dados a cada 2 segundos
 
+// --- FUNÇÕES DE CALLBACK ---
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  // Reduz o spam. Só imprime se falhar.
+  if (status != ESP_NOW_SEND_SUCCESS) {
+    Serial.println("Falha no Envio do Pacote");
+  }
+}
+
+int32_t getWiFiChannel(const char *ssid) {
+  if (int32_t n = WiFi.scanNetworks()) {
+      for (uint8_t i=0; i<n; i++) {
+          if (!strcmp(ssid, WiFi.SSID(i).c_str())) {
+              return WiFi.channel(i);
+          }
+      }
+  }
+  return 0;
+}
+
+// --- SETUP ---
 void setup() {
   Serial.begin(115200);
   delay(2000);
-  Serial.println("--- Inicializando Detector de Quedas e Pulso ---");
+  Serial.println("--- Inicializando Pulseira (v25 - 0 e 1) ---");
 
-  // --- Inicializa o MPU6050 (Detector de Queda) ---
+  // --- 1. Inicializa o MPU6050 (Detector de Queda) ---
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Serial.println("Tentando conectar ao MPU6050...");
+  Serial.println("Conectando ao MPU6050...");
   while (!mpu.begin()) {
-    Serial.println("ERRO: MPU6050 não encontrado! Tentando novamente em 2s...");
+    Serial.println("ERRO: MPU6050 não encontrado!");
     delay(2000);
   }
   Serial.println("MPU6050 conectado.");
@@ -34,49 +75,88 @@ void setup() {
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   Serial.println("Detector de queda pronto.");
 
-  // --- Inicializa o PulseSensor (Manual) ---
-  setupPulseSensor(); // Chama a função do nosso arquivo pulsesensor.cpp
+  // --- 2. Inicializa o PulseSensor ---
+  setupPulseSensor(); // (Isso chama o nosso código v24 "Divide por 2")
+  Serial.println("PulseSensor pronto.");
 
+  // --- 3. Inicializa o ESP-NOW ---
+  Serial.println("Configurando ESP-NOW...");
+  WiFi.mode(WIFI_STA);
+  int32_t channel = getWiFiChannel(WIFI_SSID);
+  if (channel == 0) {
+    Serial.println("Rede 'a10' não encontrada. Usando canal 1.");
+    channel = 1;
+  }
+  Serial.print("Usando Canal WiFi: ");
+  Serial.println(channel);
+  
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Erro ao inicializar ESP-NOW");
+    return;
+  }
+  esp_now_register_send_cb(OnDataSent);
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = channel;  
+  peerInfo.encrypt = false;
+  
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Falha ao adicionar peer");
+    return;
+  }
+  Serial.println("ESP-NOW configurado. Transmissão pronta.");
   Serial.println("--- Sistema Totalmente Operacional ---");
 }
 
+// --- LOOP PRINCIPAL ---
 void loop() {
   
-  // --- Bloco 1: Lógica do Detector de Queda ---
-  // (Roda o mais rápido possível)
   detector.update();
+  
+  // Pega o status (AGORA SÓ 0 ou 1)
+  lastFallStatus = detector.getFallStatus();
 
-  if (detector.isFallConfirmed() && !alertHasBeenSent) {
-    Serial.println("-------------------------------------");
-    Serial.println("MAIN: Queda confirmada! Tomando ação.");
-    Serial.println("MAIN: Enviando alerta por WiFi/LoRa/GSM...");
-    // (Seu código de alerta vai aqui)
-    // ---------------------------------------------------
-    alertHasBeenSent = true;
-  }
-
-  // --- Bloco 2: Lógica do Detector de Pulso ---
-  // (Checa se o timer de fundo detectou um novo batimento)
   if (isHeartbeatAvailable()) {
-    lastKnownBPM = getLatestBPM(); // <<< Atualiza o último BPM conhecido
-    
-    // Imprime imediatamente quando o batimento ocorre
-    Serial.print(">>> Novo Batimento! BPM: "); 
-    Serial.println(lastKnownBPM);
+    lastKnownBPM = getLatestBPM(); 
   }
 
-  // --- Bloco 3: Impressão Constante do BPM ---
-  // (Substitui a antiga linha de debug "analogRead(4)")
   unsigned long agora = millis();
-  if (agora - lastBpmPrintTime > 1000) { // Imprime a cada 1 segundo
+  
+  // Envia a cada 2 segundos OU se o status for 1 (QUEDA CONFIRMADA)
+  if (lastFallStatus == 1 || (agora - lastSendTime > sendInterval)) { 
     
-    // Imprime o último valor de BPM que temos
-    Serial.print("BPM Atual: ");
-    Serial.println(lastKnownBPM);
+    // Preenche a estrutura
+    myData.id = 1; 
+    myData.temp = (float)lastKnownBPM; // BPM vai no campo 'temp'
+    myData.hum = lastFallStatus;      // Queda (0 ou 1) vai no campo 'hum'
+    myData.readingId = readingId++;
     
-    lastBpmPrintTime = agora; // Reseta o timer de impressão
-  }
+    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
 
-  // Este delay afeta o detector de queda, mas não o PulseSensor (que está no timer)
+    // IMPRESSÃO NO SERIAL (REDUZIDA)
+    if (result == ESP_OK) {
+      Serial.print("Envio OK. ");
+      Serial.print("BPM: ");
+      Serial.print(myData.temp);
+      Serial.print(", Queda: ");
+      Serial.println(myData.hum);
+      
+      // <<< CORREÇÃO: Reseta a queda SE FOR 1 (Confirmada)
+      if (lastFallStatus == 1) {
+        Serial.println("Alerta de Queda (1) enviado! Resetando detector...");
+        detector.reset();
+        lastFallStatus = 0; // Reseta o status local
+      }
+    }
+    else {
+      Serial.println("Erro ao enviar dados.");
+    }
+    
+    lastSendTime = agora; 
+  }
+  
   delay(10); 
 }
